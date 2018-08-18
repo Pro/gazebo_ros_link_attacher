@@ -61,10 +61,14 @@ namespace gazebo
 
         bool getJoint(std::string model1, std::string link1, std::string model2, std::string link2, fixedJoint &joint);
 
+          void OnUpdate(const common::UpdateInfo & /*_info*/);
+
+
    private:
         ros::NodeHandle nh_;
         ros::ServiceServer attach_service_;
         ros::ServiceServer detach_service_;
+        event::ConnectionPtr update_connection_;
 
         bool attach_callback(gazebo_ros_link_attacher::Attach::Request &req,
                               gazebo_ros_link_attacher::Attach::Response &res);
@@ -72,6 +76,9 @@ namespace gazebo
                              gazebo_ros_link_attacher::Attach::Response &res);
 
         std::vector<fixedJoint> joints;
+        std::mutex queue_mutex;
+        std::queue<fixedJoint> attach_queue;
+        std::queue<fixedJoint> detach_queue;
 
         /// \brief The physics engine.
         physics::PhysicsEnginePtr physics;

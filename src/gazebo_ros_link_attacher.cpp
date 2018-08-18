@@ -31,7 +31,10 @@ namespace gazebo
         << "Load the Gazebo system plugin 'libgazebo_ros_api_plugin.so' in the gazebo_ros package)");
       return;
     }
-    
+
+    this->update_connection_ = event::Events::ConnectWorldUpdateBegin(
+            boost::bind (&GazeboRosLinkAttacher::OnUpdate, this, _1));
+
     this->world = _world;
     this->physics = this->world->Physics();
     this->attach_service_ = this->nh_.advertiseService("attach", &GazeboRosLinkAttacher::attach_callback, this);
@@ -40,6 +43,31 @@ namespace gazebo
     ROS_INFO_STREAM("Detach service at: " << this->nh_.resolveName("detach"));
     ROS_INFO("Link attacher node initialized.");
   }
+
+    void GazeboRosLinkAttacher::OnUpdate(const common::UpdateInfo & /*_info*/)
+    {
+      queue_mutex.lock();
+      while(this->attach_queue.size()) {
+        fixedJoint j = this->attach_queue.front();
+
+        j.joint = this->physics->CreateJoint("fixed", j.m1);
+        j.joint->Load(j.l1, j.l2, ignition::math::Pose3d());
+        j.joint->Attach(j.l1, j.l2);
+        j.joint->SetModel(j.m2);
+        j.joint->Init();
+        this->attach_queue.pop();
+        ROS_INFO_STREAM("Attach finished.");
+      }
+
+      while(this->detach_queue.size()) {
+        fixedJoint j = this->detach_queue.front();
+        j.joint->Detach();
+        j.joint->Reset();
+        this->detach_queue.pop();
+        ROS_INFO_STREAM("Detach finished.");
+      }
+      queue_mutex.unlock();
+    }
 
   bool GazeboRosLinkAttacher::attach(std::string model1, std::string link1,
                                      std::string model2, std::string link2)
@@ -52,7 +80,9 @@ namespace gazebo
     fixedJoint j;
     if(this->getJoint(model1, link1, model2, link2, j)){
         ROS_INFO_STREAM("Joint already existed, reusing it.");
-        j.joint->Attach(j.l1, j.l2);
+        queue_mutex.lock();
+        this->attach_queue.push(j);
+        queue_mutex.unlock();
         return true;
     }
     else{
@@ -109,32 +139,11 @@ namespace gazebo
     ROS_DEBUG_STREAM("Links are: "  << l1->GetName() << " and " << l2->GetName());
 
     ROS_DEBUG_STREAM("Creating revolute joint on model: '" << model1 << "'");
-    j.joint = this->physics->CreateJoint("fixed", m1);
     this->joints.push_back(j);
 
-    //ROS_DEBUG_STREAM("Attach");
-    //j.joint->Attach(l1, l2);
-    ROS_DEBUG_STREAM("Loading links");
-    j.joint->Load(l1, l2, ignition::math::Pose3d());
-    //ROS_DEBUG_STREAM("SetModel");
-    //j.joint->SetModel(m2);
-    /*
-     * If SetModel is not done we get:
-     * ***** Internal Program Error - assertion (this->GetParentModel() != __null)
-     failed in void gazebo::physics::Entity::PublishPose():
-     /tmp/buildd/gazebo2-2.2.3/gazebo/physics/Entity.cc(225):
-     An entity without a parent model should not happen
-
-     * If SetModel is given the same model than CreateJoint given
-     * Gazebo crashes with
-     * ***** Internal Program Error - assertion (self->inertial != __null)
-     failed in static void gazebo::physics::ODELink::MoveCallback(dBodyID):
-     /tmp/buildd/gazebo2-2.2.3/gazebo/physics/ode/ODELink.cc(183): Inertial pointer is NULL
-     */
-
-    ROS_DEBUG_STREAM("Init");
-    j.joint->Init();
-    ROS_INFO_STREAM("Attach finished.");
+    queue_mutex.lock();
+    this->attach_queue.push(j);
+    queue_mutex.unlock();
 
     return true;
   }
@@ -145,8 +154,11 @@ namespace gazebo
       // search for the instance of joint and do detach
       fixedJoint j;
       if(this->getJoint(model1, link1, model2, link2, j)){
-          j.joint->Detach();
-          j.joint->Reset();
+          queue_mutex.lock();
+          this->detach_queue.push(j);
+          queue_mutex.unlock();
+
+          //j.joint->Load(j.l1, j.l1, ignition::math::Pose3d());
           return true;
       }
 
